@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Bar,
@@ -27,13 +27,23 @@ import {
   Warning,
 } from "@phosphor-icons/react";
 import {
-  MONITORED_USERS,
-  RISK_DISTRIBUTION,
-  TELEMETRY_14D_OVERVIEW,
   type AlertStatus,
   type MonitoredUser,
   type ThreatLevel,
 } from "@/data/risksage";
+import {
+  getAlerts,
+  getEvaluation,
+  getStats,
+  getUser,
+  getUsers,
+  recordAction,
+  toMonitoredUser,
+  toRiskDistribution,
+  toTelemetry,
+  type ApiEvaluation,
+  type ApiStats,
+} from "@/lib/api";
 import { ShapInspector } from "@/components/dashboard/ShapInspector";
 import { CertBenchmarkPanel } from "@/components/dashboard/CertBenchmarkPanel";
 import { AlertTriagePanel } from "@/components/dashboard/AlertTriagePanel";
@@ -42,19 +52,59 @@ type DashboardTab = "overview" | "shap" | "alerts" | "cert";
 
 export default function SecurityDashboardPage() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
-  const [users, setUsers] = useState<MonitoredUser[]>(MONITORED_USERS);
-  const [selectedUserId, setSelectedUserId] = useState<string>(MONITORED_USERS[0].id);
+  const [users, setUsers] = useState<MonitoredUser[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string>("");
+  const [telemetry, setTelemetry] = useState<
+    { day: string; loginFlags: number; fileFlags: number; emailFlags: number; usbFlags: number }[]
+  >([]);
+  const [distribution, setDistribution] = useState<
+    { bucket: string; count: number; fill: string }[]
+  >([]);
+  const [stats, setStats] = useState<ApiStats | null>(null);
+  const [evaluation, setEvaluation] = useState<ApiEvaluation | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [summaries, alerts, st, ev] = await Promise.all([
+          getUsers(),
+          getAlerts(),
+          getStats(),
+          getEvaluation(),
+        ]);
+        const details = await Promise.all(
+          summaries.map((s) => getUser(s.userId))
+        );
+        if (cancelled) return;
+        const mapped = details.map(toMonitoredUser);
+        setUsers(mapped);
+        setSelectedUserId(mapped[0]?.id ?? "");
+        setTelemetry(toTelemetry(alerts));
+        setDistribution(toRiskDistribution(mapped));
+        setStats(st);
+        setEvaluation(ev);
+      } catch (e) {
+        if (!cancelled)
+          setError(e instanceof Error ? e.message : "Could not reach the API");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Table filters
   const [searchQuery, setSearchQuery] = useState("");
   const [threatFilter, setThreatFilter] = useState<ThreatLevel | "All">("All");
   const [statusFilter, setStatusFilter] = useState<AlertStatus | "All">("All");
   const [sortDesc, setSortDesc] = useState(true);
-
-  const selectedUser = useMemo(
-    () => users.find((u) => u.id === selectedUserId) ?? users[0],
-    [users, selectedUserId]
-  );
 
   const filteredUsers = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -78,6 +128,13 @@ export default function SecurityDashboardPage() {
     (u) => u.threatLevel === "Critical" || u.threatLevel === "High"
   ).length;
   const openThreatsCount = users.filter((u) => u.status !== "Cleared").length;
+  const alertDays = stats ? Object.keys(stats.alertsByDay).sort() : [];
+  const latestDay = alertDays[alertDays.length - 1];
+  const priorDay = alertDays[alertDays.length - 2];
+  const threats24h = latestDay && stats ? stats.alertsByDay[latestDay] : 0;
+  const threatsDelta =
+    priorDay && stats ? threats24h - stats.alertsByDay[priorDay] : 0;
+  const ensembleMetric = evaluation?.models?.[0];
 
   function handleUpdateStatus(id: string, nextStatus: AlertStatus) {
     setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, status: nextStatus } : u)));
@@ -91,6 +148,51 @@ export default function SecurityDashboardPage() {
     setSelectedUserId(id);
     setActiveTab("shap");
   }
+
+  async function handleRecordAction(userId: string, action: string) {
+    setActionError(null);
+    try {
+      await recordAction(userId, action);
+      return true;
+    } catch {
+      setActionError("Could not record that action. The API is unreachable.");
+      return false;
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0f1f10] text-white">
+        <p className="text-sm text-[#9aa39a]">Loading live risk data…</p>
+      </div>
+    );
+  }
+
+  if (error || users.length === 0) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#0f1f10] px-4 text-white">
+        <div className="max-w-md rounded-xl border border-white/10 bg-[#162a17] p-6">
+          <h2 className="text-lg font-medium">Could not load the dashboard</h2>
+          <p className="mt-2 text-sm text-[#9aa39a]">
+            {error ?? "The API returned no users."} The dashboard shows live
+            data only, so there is nothing to fall back to. Check the backend
+            is running and
+            <span className="font-mono-code text-white"> NEXT_PUBLIC_RISKSAGE_API_URL </span>
+            points at it.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-4 rounded-lg bg-[#c6f19d] px-4 py-2 text-sm font-medium text-[#0f1f10]"
+          >
+            Retry
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const selectedUser = users.find((u) => u.id === selectedUserId) ?? users[0];
 
   return (
     <div className="min-h-screen bg-[#0f1f10] text-white">
@@ -113,13 +215,13 @@ export default function SecurityDashboardPage() {
             <span className="hidden h-4 w-px bg-white/15 sm:block" />
             <span className="hidden items-center gap-1.5 rounded-full border border-[#c6f19d]/25 bg-[#162a17] px-2.5 py-1 font-mono-code text-[11px] text-[#c6f19d] sm:inline-flex">
               <span className="h-1.5 w-1.5 rounded-full bg-[#c6f19d]" />
-              Kafka Stream · 5,430 msg/s
+              Live data · {stats ? stats.eventCounts.total.toLocaleString() : "…"} events
             </span>
           </div>
 
           <div className="flex items-center gap-3">
             <span className="hidden font-mono-code text-xs text-[#9aa39a] md:inline">
-              FastAPI Inference · 18 ms
+              Scoring · {stats ? `${stats.scoringLatencyMsPerDay} ms` : "…"} / user-day
             </span>
             <Link
               href="/"
@@ -141,7 +243,7 @@ export default function SecurityDashboardPage() {
               { id: "overview", label: "Security Overview", icon: Shield },
               { id: "shap", label: "SHAP & User Behavior", icon: Brain },
               { id: "alerts", label: `Alert Management (${openThreatsCount})`, icon: Bell },
-              { id: "cert", label: "CERT r5.2 / r6.2 Evaluation", icon: Pulse },
+              { id: "cert", label: "Model Evaluation", icon: Pulse },
             ].map((tab) => {
               const Icon = tab.icon;
               const isActive = activeTab === tab.id;
@@ -175,9 +277,11 @@ export default function SecurityDashboardPage() {
               <Users className="h-4 w-4 text-[#c6f19d]" />
             </div>
             <p className="mt-2 font-mono-code text-3xl font-semibold tracking-tight text-white">
-              3,864
+              {users.length}
             </p>
-            <p className="mt-1 text-xs text-[#9aa39a]">Across 6 enterprise departments</p>
+            <p className="mt-1 text-xs text-[#9aa39a]">
+              Across {new Set(users.map((u) => u.department)).size} departments
+            </p>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-[#162a17] p-5">
@@ -186,9 +290,15 @@ export default function SecurityDashboardPage() {
               <Warning className="h-4 w-4 text-[#ffb2af]" />
             </div>
             <p className="mt-2 font-mono-code text-3xl font-semibold tracking-tight text-white">
-              24
+              {threats24h}
             </p>
-            <p className="mt-1 text-xs text-[#ffb2af]">+5 vs. prior 24h window</p>
+            <p className="mt-1 text-xs text-[#ffb2af]">
+              {threatsDelta > 0
+                ? `+${threatsDelta} vs. prior day`
+                : threatsDelta < 0
+                  ? `${threatsDelta} vs. prior day`
+                  : "Same as prior day"}
+            </p>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-[#162a17] p-5">
@@ -199,18 +309,26 @@ export default function SecurityDashboardPage() {
             <p className="mt-2 font-mono-code text-3xl font-semibold tracking-tight text-white">
               {highRiskCount}
             </p>
-            <p className="mt-1 text-xs text-[#9aa39a]">Score 70+ requiring analyst review</p>
+            <p className="mt-1 text-xs text-[#9aa39a]">Score 60+ requiring analyst review</p>
           </div>
 
           <div className="rounded-xl border border-white/10 bg-[#162a17] p-5">
             <div className="flex items-center justify-between text-xs text-[#9aa39a]">
-              <span>Ensemble AUC (CERT r6.2)</span>
+              <span>Ensemble AUC (measured)</span>
               <Brain className="h-4 w-4 text-[#c6f19d]" />
             </div>
             <p className="mt-2 font-mono-code text-3xl font-semibold tracking-tight text-[#c6f19d]">
-              0.964
+              {ensembleMetric
+                ? ensembleMetric.auc === null
+                  ? "—"
+                  : ensembleMetric.auc.toFixed(3)
+                : "—"}
             </p>
-            <p className="mt-1 text-xs text-[#9aa39a]">94.8% detection · 1.4% FPR</p>
+            <p className="mt-1 text-xs text-[#9aa39a]">
+              {ensembleMetric
+                ? `${ensembleMetric.detectionRate}% detection · ${ensembleMetric.falsePositiveRate}% FPR`
+                : "Measured on the loaded corpus"}
+            </p>
           </div>
         </div>
 
@@ -230,13 +348,13 @@ export default function SecurityDashboardPage() {
                     </p>
                   </div>
                   <span className="font-mono-code text-xs text-[#c6f19d]">
-                    Ensemble Threshold 0.70
+                    Flag threshold: risk 60
                   </span>
                 </div>
                 <div className="mt-4 h-64 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
-                      data={TELEMETRY_14D_OVERVIEW}
+                      data={telemetry}
                       margin={{ top: 10, right: 12, left: -16, bottom: 0 }}
                     >
                       <CartesianGrid stroke="rgba(255,255,255,0.06)" vertical={false} />
@@ -280,21 +398,21 @@ export default function SecurityDashboardPage() {
                 <div>
                   <h2 className="text-base font-medium text-white">Overall Risk Distribution</h2>
                   <p className="text-xs text-[#9aa39a]">
-                    Population breakdown across 3,864 active employees
+                    Population breakdown across {users.length} monitored users
                   </p>
                 </div>
                 <div className="mt-2 h-48 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
-                        data={RISK_DISTRIBUTION}
+                        data={distribution}
                         dataKey="count"
                         nameKey="bucket"
                         innerRadius={48}
                         outerRadius={76}
                         paddingAngle={3}
                       >
-                        {RISK_DISTRIBUTION.map((entry) => (
+                        {distribution.map((entry) => (
                           <Cell key={entry.bucket} fill={entry.fill} />
                         ))}
                       </Pie>
@@ -311,7 +429,7 @@ export default function SecurityDashboardPage() {
                   </ResponsiveContainer>
                 </div>
                 <div className="space-y-1.5 border-t border-white/10 pt-3">
-                  {RISK_DISTRIBUTION.map((d) => (
+                  {distribution.map((d) => (
                     <div key={d.bucket} className="flex items-center justify-between text-xs">
                       <span className="flex items-center gap-2 text-[#9aa39a]">
                         <span
@@ -524,6 +642,8 @@ export default function SecurityDashboardPage() {
             onSelectUser={setSelectedUserId}
             onUpdateStatus={handleUpdateStatus}
             onUpdateNotes={handleUpdateNotes}
+            onRecordAction={handleRecordAction}
+            actionError={actionError}
           />
         )}
 

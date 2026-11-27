@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -14,49 +14,100 @@ import {
   YAxis,
 } from "recharts";
 import { Cpu, Pulse } from "@phosphor-icons/react";
-import { CERT_BENCHMARKS, CERT_ROC_CURVES, KAFKA_TOPICS } from "@/data/risksage";
+import {
+  getEvaluation,
+  getStats,
+  type ApiEvaluation,
+  type ApiStats,
+} from "@/lib/api";
+
+const MODEL_STYLE: Record<string, { label: string; color: string; dash?: string }> = {
+  ensemble: { label: "RiskSage Ensemble", color: "#c6f19d" },
+  lstm: { label: "LSTM Sequence", color: "#79b8ff" },
+  autoencoder: { label: "Autoencoder", color: "#f6cd7a" },
+  isolation_forest: { label: "Isolation Forest", color: "#9aa39a", dash: "4 4" },
+};
 
 export function CertBenchmarkPanel() {
-  const [dataset, setDataset] = useState<"r6.2" | "r5.2">("r6.2");
+  const [evaluation, setEvaluation] = useState<ApiEvaluation | null>(null);
+  const [stats, setStats] = useState<ApiStats | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const metrics = CERT_BENCHMARKS.filter((m) => m.dataset === dataset);
-  const rocPoints = CERT_ROC_CURVES[dataset];
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([getEvaluation(), getStats()])
+      .then(([ev, st]) => {
+        if (!cancelled) {
+          setEvaluation(ev);
+          setStats(st);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Could not reach the API");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
+  if (error) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-[#162a17] p-6 text-sm text-[#9aa39a]">
+        Could not load evaluation data: {error}
+      </div>
+    );
+  }
+  if (!evaluation || !stats) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-[#162a17] p-6 text-sm text-[#9aa39a]">
+        Loading evaluation data…
+      </div>
+    );
+  }
+  if (!evaluation.hasLabels || !evaluation.models || !evaluation.rocCurves) {
+    return (
+      <div className="rounded-xl border border-white/10 bg-[#162a17] p-6">
+        <h2 className="text-lg font-medium text-white">Model Evaluation</h2>
+        <p className="mt-2 text-sm text-[#9aa39a]">
+          {evaluation.note ??
+            "No labelled attack days in this data, so detection rates cannot be measured."}
+        </p>
+      </div>
+    );
+  }
+
+  const metrics = evaluation.models;
+  const ensemble = metrics[0];
+  const corpus = evaluation.corpus!;
   const comparisonBarData = metrics.map((m) => ({
     model: m.model.replace("RiskSage ", ""),
     detectionRate: m.detectionRate,
-    aucPct: Number((m.auc * 100).toFixed(1)),
+    aucPct: m.auc === null ? 0 : Number((m.auc * 100).toFixed(1)),
     fpr: m.falsePositiveRate,
   }));
+  const topics = [
+    { topic: "cert.auth.logon", count: stats.eventCounts.logon ?? 0 },
+    { topic: "cert.file.access", count: stats.eventCounts.file ?? 0 },
+    { topic: "cert.email.outbound", count: stats.eventCounts.email ?? 0 },
+    { topic: "cert.device.usb", count: stats.eventCounts.device ?? 0 },
+    { topic: "cert.http", count: stats.eventCounts.http ?? 0 },
+  ];
 
   return (
     <div className="space-y-6">
-      {/* Header & Dataset Switcher */}
-      <div className="flex flex-col gap-4 rounded-xl border border-white/10 bg-[#162a17] p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+      <div className="flex flex-col gap-4 rounded-xl border border-white/10 bg-[#162a17] p-5 sm:p-6">
         <div>
           <h2 className="text-lg font-medium text-white">
-            CMU CERT Insider Threat Model Evaluation
+            Model Evaluation on the Loaded Corpus
           </h2>
           <p className="mt-1 text-sm text-[#9aa39a]">
-            Benchmarking RiskSage Ensemble against Isolation Forest, Autoencoder, and LSTM
-            detectors on CERT {dataset}.
+            Measured on {corpus.users} users over {corpus.days} days (
+            {corpus.rows.toLocaleString()} user-days, {corpus.maliciousDays}{" "}
+            labelled attack days). The ensemble is judged at risk 60; each
+            single model at its own benign 99th-percentile threshold. This is
+            a synthetic CERT-format corpus, not the real CERT r5.2 or r6.2
+            dataset.
           </p>
-        </div>
-        <div className="inline-flex rounded-lg border border-white/10 bg-[#0f1f10] p-1">
-          {(["r6.2", "r5.2"] as const).map((ver) => (
-            <button
-              key={ver}
-              type="button"
-              onClick={() => setDataset(ver)}
-              className={`rounded-md px-3.5 py-1.5 font-mono-code text-xs font-medium transition ${
-                dataset === ver
-                  ? "bg-[#c6f19d] text-[#0f1f10]"
-                  : "text-[#9aa39a] hover:text-white"
-              }`}
-            >
-              CERT {ver}
-            </button>
-          ))}
         </div>
       </div>
 
@@ -65,18 +116,18 @@ export function CertBenchmarkPanel() {
         <div className="rounded-xl border border-white/10 bg-[#162a17] p-5 sm:p-6 xl:col-span-6">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-base font-medium text-white">ROC Curve Comparison (CERT {dataset})</h3>
+              <h3 className="text-base font-medium text-white">ROC Curve Comparison</h3>
               <p className="text-xs text-[#9aa39a]">
                 True Positive Rate (%) vs. False Positive Rate (%)
               </p>
             </div>
             <span className="font-mono-code text-xs text-[#c6f19d]">
-              Ensemble AUC {metrics[0].auc.toFixed(3)}
+              Ensemble AUC {ensemble.auc === null ? "—" : ensemble.auc.toFixed(3)}
             </span>
           </div>
           <div className="mt-4 h-72 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rocPoints} margin={{ top: 10, right: 16, left: -12, bottom: 4 }}>
+              <LineChart data={evaluation.rocCurves} margin={{ top: 10, right: 16, left: -12, bottom: 4 }}>
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" />
                 <XAxis
                   dataKey="fpr"
@@ -102,39 +153,18 @@ export function CertBenchmarkPanel() {
                   }}
                 />
                 <Legend wrapperStyle={{ fontSize: "12px" }} />
-                <Line
-                  type="monotone"
-                  dataKey="ensemble"
-                  name="RiskSage Ensemble"
-                  stroke="#c6f19d"
-                  strokeWidth={2.5}
-                  dot={{ r: 3 }}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="lstm"
-                  name="LSTM Sequence"
-                  stroke="#79b8ff"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="autoencoder"
-                  name="Autoencoder"
-                  stroke="#f6cd7a"
-                  strokeWidth={2}
-                  dot={false}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="isolationForest"
-                  name="Isolation Forest"
-                  stroke="#9aa39a"
-                  strokeWidth={1.75}
-                  strokeDasharray="4 4"
-                  dot={false}
-                />
+                {Object.entries(MODEL_STYLE).map(([key, s]) => (
+                  <Line
+                    key={key}
+                    type="monotone"
+                    dataKey={key}
+                    name={s.label}
+                    stroke={s.color}
+                    strokeWidth={key === "ensemble" ? 2.5 : 2}
+                    strokeDasharray={s.dash}
+                    dot={key === "ensemble" ? { r: 3 } : false}
+                  />
+                ))}
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -144,7 +174,7 @@ export function CertBenchmarkPanel() {
           <div>
             <h3 className="text-base font-medium text-white">Detection Rate &amp; AUC by Model</h3>
             <p className="text-xs text-[#9aa39a]">
-              Ensemble improves recall while suppressing false alarms to {metrics[0].falsePositiveRate}%
+              Ensemble improves recall while suppressing false alarms to {ensemble.falsePositiveRate}%
             </p>
           </div>
           <div className="mt-4 h-72 w-full">
@@ -190,11 +220,11 @@ export function CertBenchmarkPanel() {
         </div>
       </div>
 
-      {/* Metrics Table + Kafka / FastAPI Stream Status */}
+      {/* Metrics Table + Event Ingestion */}
       <div className="grid grid-cols-1 gap-6 xl:grid-cols-12">
         <div className="overflow-x-auto rounded-xl border border-white/10 bg-[#162a17] p-5 sm:p-6 xl:col-span-7">
           <div className="flex items-center justify-between pb-4">
-            <h3 className="text-base font-medium text-white">Model Evaluation Table ({dataset})</h3>
+            <h3 className="text-base font-medium text-white">Model Evaluation Table</h3>
             <Cpu className="h-4 w-4 text-[#c6f19d]" />
           </div>
           <table className="w-full min-w-[540px] text-left text-sm">
@@ -205,7 +235,6 @@ export function CertBenchmarkPanel() {
                 <th className="pb-3 font-medium">Detection Rate</th>
                 <th className="pb-3 font-medium">FPR</th>
                 <th className="pb-3 font-medium">F1</th>
-                <th className="pb-3 font-medium">Latency</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/10">
@@ -215,7 +244,9 @@ export function CertBenchmarkPanel() {
                     <p className="font-medium text-white">{m.model}</p>
                     <p className="text-xs text-[#9aa39a]">{m.focus}</p>
                   </td>
-                  <td className="py-3 font-mono-code text-white">{m.auc.toFixed(3)}</td>
+                  <td className="py-3 font-mono-code text-white">
+                    {m.auc === null ? "—" : m.auc.toFixed(3)}
+                  </td>
                   <td className="py-3 font-mono-code text-[#c6f19d]">
                     {m.detectionRate.toFixed(1)}%
                   </td>
@@ -223,42 +254,48 @@ export function CertBenchmarkPanel() {
                     {m.falsePositiveRate.toFixed(1)}%
                   </td>
                   <td className="py-3 font-mono-code text-white">{m.f1Score.toFixed(3)}</td>
-                  <td className="py-3 font-mono-code text-[#9aa39a]">{m.latencyMs} ms</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <p className="mt-3 text-xs text-[#9aa39a]">
+            Scoring takes {evaluation.scoringLatencyMsPerDay} ms per user-day,
+            timed on the machine the API runs on.
+          </p>
         </div>
 
         <div className="rounded-xl border border-white/10 bg-[#162a17] p-5 sm:p-6 xl:col-span-5">
           <div className="flex items-center justify-between pb-4">
             <div>
-              <h3 className="text-base font-medium text-white">Kafka &amp; FastAPI Stream Pipeline</h3>
-              <p className="text-xs text-[#9aa39a]">Simulated real-time event ingestion topics</p>
+              <h3 className="text-base font-medium text-white">Event Ingestion</h3>
+              <p className="text-xs text-[#9aa39a]">
+                Raw events in the loaded corpus, by log kind
+              </p>
             </div>
             <Pulse className="h-4 w-4 text-[#c6f19d]" />
           </div>
           <div className="space-y-3">
-            {KAFKA_TOPICS.map((t) => (
+            {topics.map((t) => (
               <div
                 key={t.topic}
                 className="flex items-center justify-between rounded-lg border border-white/10 bg-[#0f1f10]/70 px-4 py-3"
               >
                 <div>
                   <p className="font-mono-code text-xs font-medium text-white">{t.topic}</p>
-                  <p className="mt-0.5 text-xs text-[#9aa39a]">
-                    {t.partitions} partitions · Lag {t.lag}
-                  </p>
+                  <p className="mt-0.5 text-xs text-[#9aa39a]">Events in corpus</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-mono-code text-xs text-[#c6f19d]">{t.throughput}</p>
-                  <span className="inline-flex items-center gap-1 text-[11px] text-[#9aa39a]">
-                    <span className="h-1.5 w-1.5 rounded-full bg-[#c6f19d]" />
-                    {t.status}
-                  </span>
+                  <p className="font-mono-code text-xs text-[#c6f19d]">
+                    {t.count.toLocaleString()}
+                  </p>
                 </div>
               </div>
             ))}
+            <p className="text-xs text-[#9aa39a]">
+              {stats.eventCounts.total.toLocaleString()} events in total. The
+              live stream replays events from this corpus; with a Kafka broker
+              configured it reads from the broker instead.
+            </p>
           </div>
         </div>
       </div>

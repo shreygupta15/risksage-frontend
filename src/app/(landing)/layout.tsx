@@ -14,7 +14,7 @@ export const metadata: Metadata = {
     type: "website",
     title: "RiskSage: explainable insider threat detection for security teams",
     description:
-      "Scores login, file, email, and USB telemetry across three models with SHAP attribution on CMU CERT r5.2 and r6.2.",
+      "Scores login, file, email, and USB telemetry across three models with SHAP attribution, measured on a synthetic CERT-format corpus.",
     images: ["/share.jpg"],
   },
   twitter: {

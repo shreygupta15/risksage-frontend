@@ -10,6 +10,8 @@ interface AlertTriagePanelProps {
   onSelectUser: (id: string) => void;
   onUpdateStatus: (id: string, status: AlertStatus) => void;
   onUpdateNotes: (id: string, notes: string) => void;
+  onRecordAction: (userId: string, action: string) => Promise<boolean>;
+  actionError: string | null;
 }
 
 export function AlertTriagePanel({
@@ -18,6 +20,8 @@ export function AlertTriagePanel({
   onSelectUser,
   onUpdateStatus,
   onUpdateNotes,
+  onRecordAction,
+  actionError,
 }: AlertTriagePanelProps) {
   const [statusFilter, setStatusFilter] = useState<AlertStatus | "All">("All");
   const [actionBanner, setActionBanner] = useState<string | null>(null);
@@ -29,8 +33,10 @@ export function AlertTriagePanel({
   const activeUser =
     flaggedQueue.find((u) => u.id === selectedUserId) || flaggedQueue[0] || users[0];
 
-  function triggerContainment(label: string) {
-    setActionBanner(`${label} queued for ${activeUser.name} (${activeUser.hostId}).`);
+  async function triggerContainment(label: string) {
+    const ok = await onRecordAction(activeUser.id, label);
+    if (!ok) return;
+    setActionBanner(`${label} recorded for ${activeUser.name} (${activeUser.hostId}).`);
     if (activeUser.status === "Flagged") {
       onUpdateStatus(activeUser.id, "Investigating");
     }
@@ -38,6 +44,11 @@ export function AlertTriagePanel({
 
   return (
     <div className="space-y-6">
+      {actionError && (
+        <div className="rounded-xl border border-[#ef6461]/40 bg-[#ef6461]/10 px-4 py-3 text-sm text-[#ffb2af]">
+          {actionError}
+        </div>
+      )}
       {actionBanner && (
         <div className="flex items-center justify-between rounded-xl border border-[#c6f19d]/40 bg-[#c6f19d]/10 px-4 py-3 text-sm text-[#c6f19d]">
           <span className="flex items-center gap-2">
@@ -216,7 +227,7 @@ export function AlertTriagePanel({
 
             <div className="border-t border-white/10 pt-4">
               <p className="text-xs font-medium uppercase tracking-wider text-[#9aa39a]">
-                Simulated Response Actions
+                Response Actions
               </p>
               <div className="mt-2.5 flex flex-wrap gap-2.5">
                 <button

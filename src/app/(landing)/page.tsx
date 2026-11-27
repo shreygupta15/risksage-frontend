@@ -1,36 +1,29 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import { ArrowRight, CaretDown } from "@phosphor-icons/react/dist/ssr";
 import { ShaderArt } from "@/components/ui/shader-art";
-import { CERT_BENCHMARKS, MONITORED_USERS } from "@/data/risksage";
+import type { MonitoredUser } from "@/data/risksage";
+import {
+  getEvaluation,
+  getUser,
+  getUsers,
+  toMonitoredUser,
+  type ApiEvaluation,
+} from "@/lib/api";
 
 const DIAGRAM_TELEMETRY = JSON.stringify({
   layout: "fanin",
   alt: "Windows, Gmail, Google Drive, and Slack telemetry streams into Kafka and FastAPI for RiskSage scoring.",
   sources: [
-    { label: "Kafka", icon: "kafka", sub: "5,430 msg/s" },
+    { label: "Kafka", icon: "kafka", sub: "Log streams" },
     { label: "Windows", icon: "windows", sub: "Logon & USB" },
     { label: "Google Drive", icon: "google-drive", sub: "File reads" },
     { label: "Gmail", icon: "gmail", sub: "Outbound mail" },
   ],
   target: { label: "FastAPI", icon: "fastapi" },
-  then: { label: "PostgreSQL", icon: "postgres", meta: "18 ms" },
+  then: { label: "PostgreSQL", icon: "postgres", meta: "Scored data" },
 });
-
-const SHORT_TRIGGERS: Record<string, string> = {
-  "usr-4091": "02:14 login · 1.84 GB zip",
-  "usr-3182": "Cross-host SQL dump",
-  "usr-2745": "10d outbound mail ramp",
-  "usr-5519": "USB mount · kubeconfig",
-  "usr-6204": "Parquet warehouse dump",
-  "usr-1890": "Off-hours NDA reads",
-  "usr-7302": "Failed sudo retries",
-  "usr-8841": "Normal baseline",
-  "usr-9102": "Normal audit reads",
-};
-
-const R62_BENCHMARKS = CERT_BENCHMARKS.filter((m) => m.dataset === "r6.2");
-const R52_BY_MODEL = Object.fromEntries(
-  CERT_BENCHMARKS.filter((m) => m.dataset === "r5.2").map((m) => [m.model, m])
-);
 
 const STACK_ICONS = [
   { src: "/assets/icons/kafka.svg", alt: "Apache Kafka", cls: "ic ic-24 ic-tall ic-ink" },
@@ -48,9 +41,36 @@ function ArrowIcon() {
 }
 
 export default function LandingPage() {
-  const leadUser = MONITORED_USERS[0];
-  const heroRows = MONITORED_USERS.slice(0, 6);
-  const workbenchRows = MONITORED_USERS;
+  const [users, setUsers] = useState<MonitoredUser[]>([]);
+  const [evaluation, setEvaluation] = useState<ApiEvaluation | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getUsers()
+      .then((s) => Promise.all(s.map((x) => getUser(x.userId))))
+      .then((d) => {
+        if (!cancelled) setUsers(d.map(toMonitoredUser));
+      })
+      .catch(() => {});
+    getEvaluation()
+      .then((ev) => {
+        if (!cancelled) setEvaluation(ev);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const leadUser = users[0];
+  const heroRows = users.slice(0, 6);
+  const workbenchRows = users;
+  const ensemble = evaluation?.models?.[0];
+  const activeCount = users.filter((u) => u.riskScore >= 40).length;
+  const criticalCount = users.filter((u) => u.threatLevel === "Critical").length;
+  const escalatedCount = users.filter((u) => u.status === "Escalated").length;
+  const clearedCount = users.filter((u) => u.status === "Cleared").length;
+  const loaded = users.length > 0;
 
   return (
     <>
@@ -105,9 +125,9 @@ export default function LandingPage() {
                                 <span className="ui-agent ui-note__av" aria-hidden="true" />
                                 <span className="ui-note__text">
                                   <span className="ui-note__title">
-                                    Martin Vance flagged<time>now</time>
+                                    {leadUser ? `${leadUser.name} flagged` : "…" }<time>{leadUser?.lastActivity ?? ""}</time>
                                   </span>
-                                  <span className="ui-note__body">02:14 login and 1.84 GB archive</span>
+                                  <span className="ui-note__body">{leadUser?.primaryTrigger ?? "Loading live data…"}</span>
                                 </span>
                               </li>
                             </ul>
@@ -172,7 +192,9 @@ export default function LandingPage() {
                 <h1 id="hero-h">Explainable insider threat detection</h1>
                 <p className="hero__lead">
                   RiskSage scores login, file, email, and USB activity across Isolation Forest,
-                  Autoencoder, and LSTM models, printing SHAP factors on CERT r6.2 at 0.964 AUC.
+                  Autoencoder, and LSTM models, printing SHAP factors at{" "}
+                  {ensemble ? (ensemble.auc === null ? "…" : ensemble.auc.toFixed(3)) : "…"} AUC on a synthetic CERT-format
+                  corpus.
                 </p>
                 <div className="btn-row">
                   <a className="btn btn--primary" href="/dashboard">
@@ -184,13 +206,13 @@ export default function LandingPage() {
                   </a>
                 </div>
                 <p className="hero__proof">
-                  Evaluated on CMU CERT r5.2 and r6.2 with Kafka streaming and FastAPI.
+                  Evaluated on a synthetic CERT-format corpus, scored by a FastAPI backend.
                 </p>
               </div>
               <div
                 className="hero__art span-6 start-7"
                 role="img"
-                aria-label="RiskSage alert queue showing Martin Vance flagged at score 94 with SHAP explanations for an after-hours login, archive export, and USB mount"
+                aria-label="RiskSage alert queue showing flagged users with SHAP explanations"
                 data-fx="fluted-glass"
                 data-fx-palette='{"bg":"#d9ccb7","surface":"#e9e0d2","ink":"#2a2622","accent":"#a8794a"}'
               >
@@ -211,12 +233,12 @@ export default function LandingPage() {
                       <span>Alert triage</span>
                       <span className="rs-win__side-label">Telemetry</span>
                       <span>Kafka stream</span>
-                      <span>CERT r6.2</span>
+                      <span>Live data</span>
                     </div>
                     <div className="rs-win__main">
                       <div className="rs-win__head">
                         <h4>Active anomalies</h4>
-                        <span className="rs-win__badge">CERT r6.2 · 3 models</span>
+                        <span className="rs-win__badge">Live data · 3 models</span>
                       </div>
                       <div className="rs-win__rows">
                         {heroRows.map((u) => (
@@ -246,23 +268,19 @@ export default function LandingPage() {
                 </div>
                 <div className="ly-piece ly-piece--note rs-note" aria-hidden="true" data-ly-steps="700">
                   <div className="rs-note__row">
-                    <h5>SHAP factors · {leadUser.name}</h5>
+                    <h5>SHAP factors · {leadUser?.name ?? "…"}</h5>
                     <span className="rs-note__tag" data-step="" data-step-at="4">
-                      Score 94
+                      {leadUser ? `Score ${leadUser.riskScore}` : "Score …"}
                     </span>
                   </div>
-                  <div className="rs-note__line" data-step="">
-                    <span>02:14 shift-outside login</span>
-                    <span className="rs-note__val">+0.31</span>
-                  </div>
-                  <div className="rs-note__line" data-step="">
-                    <span>1.84 GB R&amp;D archive read</span>
-                    <span className="rs-note__val">+0.27</span>
-                  </div>
-                  <div className="rs-note__line" data-step="">
-                    <span>Unregistered USB mount</span>
-                    <span className="rs-note__val">+0.18</span>
-                  </div>
+                  {(leadUser?.shapFactors.slice(0, 3) ?? []).map((f) => (
+                    <div className="rs-note__line" data-step="" key={f.feature}>
+                      <span>{f.feature}</span>
+                      <span className="rs-note__val">
+                        {f.contribution > 0 ? `+${f.contribution.toFixed(2)}` : f.contribution.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -292,7 +310,7 @@ export default function LandingPage() {
             <div
               className="ui app fill"
               role="img"
-              aria-label="RiskSage security workbench showing monitored employee accounts beside Martin Vance's SHAP feature attributions and event timeline"
+              aria-label="RiskSage security workbench showing monitored employee accounts beside SHAP feature attributions and event timeline"
               data-ui-pause-host=""
             >
               <div className="app__pane app__pane--list">
@@ -319,16 +337,16 @@ export default function LandingPage() {
                   <div className="ui-win__body">
                     <nav className="ui-win__side" aria-hidden="true">
                       <span className="ui-win__nav is-on">
-                        Queue<em>24</em>
+                        Queue<em>{loaded ? activeCount : "…"}</em>
                       </span>
                       <span className="ui-win__nav">
-                        Critical<em>4</em>
+                        Critical<em>{loaded ? criticalCount : "…"}</em>
                       </span>
                       <span className="ui-win__nav">
-                        Escalated<em>7</em>
+                        Escalated<em>{loaded ? escalatedCount : "…"}</em>
                       </span>
                       <span className="ui-win__nav">
-                        Cleared<em>142</em>
+                        Cleared<em>{loaded ? clearedCount : "…"}</em>
                       </span>
                       <span className="ui-win__label">Channels</span>
                       <span className="ui-win__nav">
@@ -352,7 +370,7 @@ export default function LandingPage() {
                               {u.initials}
                             </span>
                             <span className="ui-win__who">{u.name}</span>
-                            <span className="ui-win__sub">{SHORT_TRIGGERS[u.id] ?? u.department}</span>
+                            <span className="ui-win__sub">{u.primaryTrigger}</span>
                             <span
                               className={`ui-win__st ${
                                 u.status === "Flagged" || u.status === "Escalated"
@@ -379,36 +397,38 @@ export default function LandingPage() {
                   <div className="rs-shap-pane__top">
                     <div>
                       <h3 className="rs-shap-pane__title">
-                        {leadUser.name} · {leadUser.certId}
+                        {leadUser?.name ?? "…"} · {leadUser?.certId ?? ""}
                       </h3>
                       <span className="rs-shap-pane__sub">
-                        {leadUser.department} · {leadUser.hostId} · Base expected risk 0.14
+                        {leadUser
+                          ? `${leadUser.department} · ${leadUser.hostId} · Base expected risk ${leadUser.shapBaseValue.toFixed(2)}`
+                          : "Loading live data…"}
                       </span>
                     </div>
-                    <span className="rs-win__badge">Ensemble 0.94</span>
+                    <span className="rs-win__badge">{leadUser ? `Ensemble ${leadUser.models.ensemble.toFixed(2)}` : "Ensemble …"}</span>
                   </div>
 
                   <div className="rs-shap-models">
                     <div className="rs-shap-model">
                       <span>Isolation Forest</span>
-                      <strong>{leadUser.models.isolationForest.toFixed(2)}</strong>
+                      <strong>{leadUser ? leadUser.models.isolationForest.toFixed(2) : "…"}</strong>
                     </div>
                     <div className="rs-shap-model">
                       <span>Autoencoder</span>
-                      <strong>{leadUser.models.autoencoder.toFixed(2)}</strong>
+                      <strong>{leadUser ? leadUser.models.autoencoder.toFixed(2) : "…"}</strong>
                     </div>
                     <div className="rs-shap-model">
                       <span>LSTM Sequence</span>
-                      <strong>{leadUser.models.lstm.toFixed(2)}</strong>
+                      <strong>{leadUser ? leadUser.models.lstm.toFixed(2) : "…"}</strong>
                     </div>
                     <div className="rs-shap-model">
                       <span>Ensemble Output</span>
-                      <strong>{leadUser.models.ensemble.toFixed(2)}</strong>
+                      <strong>{leadUser ? leadUser.models.ensemble.toFixed(2) : "…"}</strong>
                     </div>
                   </div>
 
                   <div className="rs-shap-bars">
-                    {leadUser.shapFactors.map((f) => {
+                    {(leadUser?.shapFactors ?? []).map((f) => {
                       const pct = Math.min(100, Math.round((Math.abs(f.contribution) / 0.35) * 100));
                       return (
                         <div className="rs-shap-row" key={f.feature}>
@@ -430,7 +450,7 @@ export default function LandingPage() {
                   </div>
 
                   <div className="rs-shap-events">
-                    {leadUser.timeline.map((ev) => (
+                    {(leadUser?.timeline ?? []).map((ev) => (
                       <div className="rs-shap-ev" key={ev.id}>
                         <time>{ev.timestamp}</time>
                         <b>{ev.channel}</b>
@@ -499,38 +519,19 @@ export default function LandingPage() {
                       >
                         <div className="ui ui-notify" data-ui="notify">
                           <ul className="ui-notify__list" data-notify-list="">
-                            <li className="ui-note">
-                              <span className="ui-agent ui-note__av" aria-hidden="true" />
-                              <span className="ui-note__text">
-                                <span className="ui-note__title">
-                                  Martin Vance flagged<time>now</time>
+                            {users.slice(0, 3).map((u) => (
+                              <li className="ui-note" key={u.id}>
+                                <span className="ui-avatar ui-note__av" data-tone={u.threatLevel === "Critical" ? "2" : "1"}>
+                                  {u.initials}
                                 </span>
-                                <span className="ui-note__body">02:14 login + 1.84 GB archive</span>
-                              </span>
-                              <span className="ui-btn ui-btn--sm ui-note__btn">Inspect</span>
-                            </li>
-                            <li className="ui-note">
-                              <span className="ui-avatar ui-note__av" data-tone="2">
-                                RL
-                              </span>
-                              <span className="ui-note__text">
-                                <span className="ui-note__title">
-                                  Rachel Lindqvist escalated<time>11m</time>
+                                <span className="ui-note__text">
+                                  <span className="ui-note__title">
+                                    {u.name} {u.status === "Flagged" ? "flagged" : u.status.toLowerCase()}<time>{u.lastActivity}</time>
+                                  </span>
+                                  <span className="ui-note__body">{u.primaryTrigger}</span>
                                 </span>
-                                <span className="ui-note__body">Cross-host SQL dump on db-prod-02</span>
-                              </span>
-                            </li>
-                            <li className="ui-note">
-                              <span className="ui-avatar ui-note__av" data-tone="3">
-                                KT
-                              </span>
-                              <span className="ui-note__text">
-                                <span className="ui-note__title">
-                                  Kenji Takahashi USB mount<time>31m</time>
-                                </span>
-                                <span className="ui-note__body">SanDisk Cruzer + kubeconfig read</span>
-                              </span>
-                            </li>
+                              </li>
+                            ))}
                           </ul>
                         </div>
                       </div>
@@ -539,10 +540,10 @@ export default function LandingPage() {
                 </article>
 
                 <article className="card card--row span-6">
-                  <h3>Streams Kafka events through FastAPI</h3>
+                  <h3>Scores log events through FastAPI</h3>
                   <p>
-                    Ingests Windows logon, Google Drive, and email logs via Kafka topics into
-                    FastAPI scoring workers.
+                    Ingests logon, file, email, and USB logs into FastAPI scoring workers. A Kafka
+                    broker can feed the same stream when one is configured.
                   </p>
                   <div
                     className="panel panel--flush"
@@ -562,7 +563,7 @@ export default function LandingPage() {
                 <h3>Measures multi-model ensemble agreement</h3>
                 <p>
                   Combines Isolation Forest, Autoencoder, and LSTM sequence memory to reduce false
-                  positives to 1.4%.
+                  positives to {ensemble ? `${ensemble.falsePositiveRate}%` : "…"} on the loaded corpus.
                 </p>
                 <div
                   className="panel panel--flush"
@@ -571,7 +572,7 @@ export default function LandingPage() {
                   data-fx-params='{"drift":0}'
                   data-fx-palette='{"bg":"#d9ccb7","surface":"#e9e0d2","ink":"#2a2622","accent":"#a8794a"}'
                   role="img"
-                  aria-label="14-day anomaly detection precision trend reaching 94.8% detection rate"
+                  aria-label="Ensemble detection rate on the loaded corpus"
                 >
                   <div className="stage stage--fade-b">
                     <div
@@ -586,14 +587,14 @@ export default function LandingPage() {
                       <div className="ui ui-panel ui-stat" data-ui="stat" data-from="88" data-to="95" data-suffix="%">
                         <div className="ui-stat__head">
                           <div className="ui-stat__top">
-                            <span className="ui-stat__label">CERT r6.2 detection rate</span>
+                            <span className="ui-stat__label">Ensemble detection rate</span>
                             <span className="ui-stat__range">Last 14 days</span>
                           </div>
                           <div className="ui-stat__line">
                             <span className="ui-stat__num" data-stat-num="">
-                              94.8%
+                              {ensemble ? `${ensemble.detectionRate}%` : "…"}
                             </span>
-                            <span className="ui-chip ui-chip--plain ui-stat__delta">0.964 AUC</span>
+                            <span className="ui-chip ui-chip--plain ui-stat__delta">{ensemble ? `${ensemble.auc === null ? "…" : ensemble.auc.toFixed(3)} AUC` : "… AUC"}</span>
                             <span className="ui-stat__sub">Ensemble fusion</span>
                           </div>
                         </div>
@@ -846,13 +847,13 @@ export default function LandingPage() {
                     <div className="ui ui-panel rs-shap-pane">
                       <div className="rs-shap-pane__top">
                         <div>
-                          <h3 className="rs-shap-pane__title">SHAP Attribution · Martin Vance</h3>
-                          <span className="rs-shap-pane__sub">Predicted probability 0.94</span>
+                          <h3 className="rs-shap-pane__title">SHAP Attribution · {leadUser?.name ?? "…"}</h3>
+                          <span className="rs-shap-pane__sub">{leadUser ? `Risk score ${leadUser.riskScore}/100` : "…"}</span>
                         </div>
                         <span className="rs-win__badge">Critical</span>
                       </div>
                       <div className="rs-shap-bars">
-                        {leadUser.shapFactors.map((f) => (
+                        {(leadUser?.shapFactors ?? []).map((f) => (
                           <div className="rs-shap-row" key={f.feature}>
                             <span className="rs-shap-row__name">{f.feature}</span>
                             <span className="rs-shap-row__track">
@@ -887,13 +888,13 @@ export default function LandingPage() {
                     <div className="ui ui-panel rs-shap-pane">
                       <div className="rs-shap-pane__top">
                         <div>
-                          <h3 className="rs-shap-pane__title">Event Timeline · PC-RD-0419</h3>
-                          <span className="rs-shap-pane__sub">4 high-signal events in 25 minutes</span>
+                          <h3 className="rs-shap-pane__title">Event Timeline · {leadUser?.hostId ?? "…"}</h3>
+                          <span className="rs-shap-pane__sub">{leadUser ? `${leadUser.timeline.length} flagged days` : "…"}</span>
                         </div>
                         <span className="rs-win__badge">Nov 26</span>
                       </div>
                       <div className="rs-shap-events">
-                        {leadUser.timeline.map((ev) => (
+                        {(leadUser?.timeline ?? []).map((ev) => (
                           <div className="rs-shap-ev" key={ev.id}>
                             <time>{ev.timestamp}</time>
                             <b>{ev.channel}</b>
@@ -920,14 +921,14 @@ export default function LandingPage() {
                           <h3 className="rs-shap-pane__title">Analyst Triage Queue</h3>
                           <span className="rs-shap-pane__sub">Ordered by ensemble risk score</span>
                         </div>
-                        <span className="rs-win__badge">5 active</span>
+                        <span className="rs-win__badge">{loaded ? `${activeCount} active` : "…"}</span>
                       </div>
                       <div className="rs-shap-events">
-                        {MONITORED_USERS.slice(0, 5).map((u) => (
+                        {users.slice(0, 5).map((u) => (
                           <div className="rs-shap-ev" key={u.id}>
                             <time>{u.riskScore}/100</time>
                             <b>{u.status}</b>
-                            <span>{u.name} · {SHORT_TRIGGERS[u.id]}</span>
+                            <span>{u.name} · {u.primaryTrigger}</span>
                           </div>
                         ))}
                       </div>
@@ -943,15 +944,14 @@ export default function LandingPage() {
         <section className="section bg-band bg-bleed" id="benchmarks" aria-labelledby="benchmarks-h">
           <div className="wrap">
             <div className="section-head">
-              <h2 id="benchmarks-h">CERT r5.2 and r6.2 model comparison</h2>
+              <h2 id="benchmarks-h">Model comparison on the loaded corpus</h2>
               <p className="t-lead">
-                Ensemble detection pairs Isolation Forest, Autoencoder, and LSTM sequence models
-                against CMU CERT Insider Threat benchmarks.
+                Ensemble detection pairs Isolation Forest, Autoencoder, and LSTM sequence models,
+                measured on the synthetic CERT-format corpus the API is running on.
               </p>
             </div>
             <div className="grid rs-bench-grid">
-              {R62_BENCHMARKS.map((row) => {
-                const r52 = R52_BY_MODEL[row.model];
+              {(evaluation?.models ?? []).map((row) => {
                 const shortScope =
                   row.model === "RiskSage Ensemble"
                     ? "Weighted fusion + SHAP"
@@ -960,7 +960,7 @@ export default function LandingPage() {
                     : row.model === "Autoencoder"
                     ? "Feature reconstruction"
                     : "Single-session outliers";
-                const aucWidth = Math.round(row.auc * 220);
+                const aucWidth = Math.round((row.auc ?? 0) * 220);
                 const detWidth = Math.round((row.detectionRate / 100) * 220);
                 return (
                   <article className="card card--row m-nolift span-3 rs-bench-card" key={row.model}>
@@ -972,7 +972,7 @@ export default function LandingPage() {
                       width="220"
                       height="26"
                       role="img"
-                      aria-label={`${row.model} AUC ${row.auc.toFixed(3)} and detection rate ${row.detectionRate.toFixed(1)}%`}
+                      aria-label={`${row.model} AUC ${row.auc === null ? "—" : row.auc.toFixed(3)} and detection rate ${row.detectionRate.toFixed(1)}%`}
                     >
                       <rect x="0" y="2" width="220" height="8" rx="4" fill="currentColor" opacity="0.12" />
                       <rect x="0" y="2" width={aucWidth} height="8" rx="4" fill="var(--accent)" />
@@ -981,12 +981,12 @@ export default function LandingPage() {
                     </svg>
                     <ul className="rows rs-bench-rows">
                       <li>
-                        <span className="rows__name">AUC (r6.2)</span>
-                        <span className="rows__value">{row.auc.toFixed(3)}</span>
+                        <span className="rows__name">AUC</span>
+                        <span className="rows__value">{row.auc === null ? "—" : row.auc.toFixed(3)}</span>
                       </li>
                       <li>
-                        <span className="rows__name">AUC (r5.2)</span>
-                        <span className="rows__value">{r52 ? r52.auc.toFixed(3) : "-"}</span>
+                        <span className="rows__name">F1 score</span>
+                        <span className="rows__value">{row.f1Score.toFixed(3)}</span>
                       </li>
                       <li>
                         <span className="rows__name">Detection rate</span>
@@ -1052,15 +1052,17 @@ export default function LandingPage() {
                   <div className="faq__item">
                     <h3>Which datasets validate RiskSage model benchmarks?</h3>
                     <p>
-                      AUC, detection rate, and false positive rate are evaluated on CMU CERT
-                      datasets r5.2 and r6.2.
+                      AUC, detection rate, and false positive rate are measured on the corpus
+                      the API is running on. In the demo that is a synthetic CERT-format set,
+                      not the real CERT datasets.
                     </p>
                   </div>
                   <div className="faq__item">
                     <h3>How does the production pipeline process events?</h3>
                     <p>
-                      Kafka streams telemetry into FastAPI scoring services that deliver SHAP
-                      vectors to React.
+                      Log events flow into the FastAPI scoring service, which returns SHAP
+                      vectors to the dashboard. A Kafka broker can feed the same stream when
+                      one is configured.
                     </p>
                   </div>
                 </div>
@@ -1077,7 +1079,7 @@ export default function LandingPage() {
             <div className="section-head">
               <h2 id="close-h">Inspect insider threat alerts in RiskSage</h2>
               <p>
-                Explore interactive user timelines, SHAP attribution charts, and CERT r5.2 and r6.2
+                Explore interactive user timelines, SHAP attribution charts, and measured
                 model comparisons.
               </p>
             </div>
@@ -1126,7 +1128,7 @@ export default function LandingPage() {
                 <h3>Benchmarks</h3>
                 <ul>
                   <li>
-                    <a href="#benchmarks">CERT r6.2</a>
+                    <a href="#benchmarks">Benchmarks</a>
                   </li>
                   <li>
                     <a href="#faq">Questions</a>

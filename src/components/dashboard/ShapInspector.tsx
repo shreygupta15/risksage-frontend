@@ -51,6 +51,12 @@ export function ShapInspector({ user, onStatusChange }: ShapInspectorProps) {
     baseline: f.baseline,
     channel: f.channel,
   }));
+  const shapMin = Math.min(0, ...shapData.map((d) => d.contribution));
+  const shapMax = Math.max(0.1, ...shapData.map((d) => d.contribution));
+  const shapDomain: [number, number] = [
+    Math.floor(shapMin * 10) / 10 - 0.05,
+    Math.ceil(shapMax * 10) / 10 + 0.05,
+  ];
 
   return (
     <div className="space-y-6">
@@ -157,7 +163,7 @@ export function ShapInspector({ user, onStatusChange }: ShapInspectorProps) {
             <div>
               <h3 className="text-base font-medium text-white">SHAP Feature Attributions</h3>
               <p className="text-xs text-[#9aa39a]">
-                Base expected risk <span className="font-mono-code text-white">0.14</span> → Final
+                Base expected risk <span className="font-mono-code text-white">{user.shapBaseValue.toFixed(2)}</span> → Final
                 ensemble <span className="font-mono-code text-[#c6f19d]">{user.models.ensemble.toFixed(2)}</span>
               </p>
             </div>
@@ -176,7 +182,7 @@ export function ShapInspector({ user, onStatusChange }: ShapInspectorProps) {
                 <CartesianGrid stroke="rgba(255,255,255,0.06)" horizontal={false} />
                 <XAxis
                   type="number"
-                  domain={[-0.1, 0.35]}
+                  domain={shapDomain}
                   tick={{ fill: "#9aa39a", fontSize: 11, fontFamily: "JetBrains Mono" }}
                   axisLine={{ stroke: "rgba(255,255,255,0.12)" }}
                   tickLine={false}
@@ -257,7 +263,7 @@ export function ShapInspector({ user, onStatusChange }: ShapInspectorProps) {
           <div>
             <h3 className="text-base font-medium text-white">Channel Deviation vs. Baseline</h3>
             <p className="text-xs text-[#9aa39a]">
-              Normalized 90-day profile compared with current 24-hour window (0–100 index)
+              Value as a share of the benign 99th percentile (100 = at or above it)
             </p>
           </div>
 
